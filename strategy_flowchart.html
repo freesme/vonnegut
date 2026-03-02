@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>量化策略流程图 - hot_stock.py</title>
+  <style>
+    body { margin: 0; padding: 20px; background: #0d1117; color: #c9d1d9; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+    h1 { text-align: center; color: #58a6ff; margin-bottom: 5px; }
+    h2 { text-align: center; color: #8b949e; font-weight: normal; font-size: 14px; margin-top: 0; }
+    .section { margin: 30px auto; max-width: 1400px; }
+    .section-title { color: #f0883e; font-size: 20px; font-weight: bold; border-bottom: 2px solid #30363d; padding-bottom: 8px; margin-bottom: 15px; }
+    .mermaid { background: #161b22; border-radius: 12px; padding: 25px; border: 1px solid #30363d; overflow-x: auto; }
+    .note { background: #1c2128; border-left: 4px solid #58a6ff; padding: 12px 16px; border-radius: 0 8px 8px 0; margin: 15px 0; font-size: 13px; line-height: 1.6; }
+  </style>
+</head>
+<body>
+
+<h1>Hot Stock 量化交易策略流程图</h1>
+<h2>JoinQuant 聚宽平台 · 短线涨停板策略</h2>
+
+<!-- ===== 1. 全局时间线 ===== -->
+<div class="section">
+  <div class="section-title">一、交易日时间线总览</div>
+  <div class="mermaid">
+graph LR
+    A["🕘 09:25<br/>record_morning_stats<br/>盘前统计 / 更新优先级"] --> B["🕘 09:28<br/>get_stock_list<br/>选股列表生成"]
+    B --> C["🕘 09:28<br/>sell_limit_down<br/>集合竞价风险卖出"]
+    C --> D["🕘 09:28:10<br/>buy()<br/>早盘买入"]
+    D --> E["🕘 09:36~10:30<br/>sell_limit_per5min<br/>每5分钟止损"]
+    E --> F["🕘 10:31, 11:01<br/>sell2 上午策略"]
+    F --> G["🕘 13:05~14:45<br/>sell_limit_per5min<br/>每5分钟止损"]
+    G --> H["🕘 13:31~14:50<br/>sell2 下午策略"]
+    H --> I["🕘 14:50<br/>buy()<br/>周五下午建仓"]
+    I --> J["🕘 15:00<br/>record_closing_stats<br/>盘后统计"]
+    J --> K["🕘 15:05<br/>log_daily_trades<br/>交易日志"]
+
+    style A fill:#1f6feb,stroke:#58a6ff,color:#fff
+    style B fill:#238636,stroke:#3fb950,color:#fff
+    style C fill:#da3633,stroke:#f85149,color:#fff
+    style D fill:#238636,stroke:#3fb950,color:#fff
+    style E fill:#da3633,stroke:#f85149,color:#fff
+    style F fill:#da3633,stroke:#f85149,color:#fff
+    style G fill:#da3633,stroke:#f85149,color:#fff
+    style H fill:#da3633,stroke:#f85149,color:#fff
+    style I fill:#238636,stroke:#3fb950,color:#fff
+    style J fill:#1f6feb,stroke:#58a6ff,color:#fff
+    style K fill:#1f6feb,stroke:#58a6ff,color:#fff
+  </div>
+  <div class="note">
+    🟦 蓝色 = 数据统计 &nbsp;&nbsp; 🟩 绿色 = 买入相关 &nbsp;&nbsp; 🟥 红色 = 卖出相关
+  </div>
+</div>
+
+<!-- ===== 2. 盘前统计 ===== -->
+<div class="section">
+  <div class="section-title">二、盘前统计 record_morning_stats（09:25）</div>
+  <div class="mermaid">
+graph TD
+    A["09:25 record_morning_stats"] --> B["获取沪深300近5日数据"]
+    B --> C["计算3日累计涨跌幅"]
+    C --> D{3日涨幅判断}
+    D -->|"> 2%"| E["trend = strong_up"]
+    D -->|"> 0.5%"| F["trend = up"]
+    D -->|"> -0.5%"| G["trend = flat"]
+    D -->|"≤ -0.5%"| H["trend = down"]
+    E --> I["update_strategy_priority"]
+    F --> I
+    G --> I
+    H --> I
+    I --> J["计算波动率 / 量能比"]
+    J --> K["清空 g.score_cache"]
+    K --> L["保存到 g.trade_stats"]
+
+    I --> M{趋势 → 策略优先级}
+    M -->|strong_up| N["lb > rzq > yje > fxsbdk > dk"]
+    M -->|up| O["yje > lb > rzq > fxsbdk > dk"]
+    M -->|flat| P["lb > rzq > yje > fxsbdk > dk"]
+    M -->|down| Q["lb > fxsbdk > yje > rzq > dk"]
+
+    style A fill:#1f6feb,stroke:#58a6ff,color:#fff
+    style E fill:#238636,stroke:#3fb950,color:#fff
+    style F fill:#238636,stroke:#3fb950,color:#fff
+    style G fill:#e3b341,stroke:#d29922,color:#000
+    style H fill:#da3633,stroke:#f85149,color:#fff
+  </div>
+</div>
+
+<!-- ===== 3. 选股 ===== -->
+<div class="section">
+  <div class="section-title">三、选股 get_stock_list（09:28）</div>
+  <div class="mermaid">
+graph TD
+    A["09:28 get_stock_list"] --> B{"should_empty_position?<br/>大盘连续2日量能异常"}
+    B -->|是| C["清仓所有持仓<br/>safe_sell 全部 → 0"]
+    B -->|否| D["prepare_stock_list<br/>获取初始股票池"]
+    D --> E["get_hl_stock<br/>昨日涨停股"]
+    D --> F["get_ever_hl_stock<br/>昨日曾涨停股"]
+    E --> G["分类处理"]
+    F --> G
+    G --> H["g.gap_up<br/>首板高开<br/>昨涨停 + 前日无涨停<br/>+ 高开"]
+    G --> I["g.gap_down<br/>首板低开<br/>昨涨停 + 前日无涨停<br/>+ 低开"]
+    G --> J["g.reversal<br/>弱转强<br/>昨曾涨停未封 + 前日无涨停"]
+    G --> K["g.fxsbdk<br/>反向首板低开<br/>昨日跌停"]
+    G --> L{"连板龙头判断"}
+    L --> M{"集合竞价高开比≥76%?"}
+    M -->|是| N["g.lblt = 连板龙头列表"]
+    M -->|否| O["g.lblt = 空"]
+
+    style A fill:#238636,stroke:#3fb950,color:#fff
+    style B fill:#e3b341,stroke:#d29922,color:#000
+    style C fill:#da3633,stroke:#f85149,color:#fff
+    style H fill:#1f6feb,stroke:#58a6ff,color:#fff
+    style I fill:#1f6feb,stroke:#58a6ff,color:#fff
+    style J fill:#1f6feb,stroke:#58a6ff,color:#fff
+    style K fill:#1f6feb,stroke:#58a6ff,color:#fff
+    style N fill:#1f6feb,stroke:#58a6ff,color:#fff
+  </div>
+</div>
+
+<!-- ===== 4. 买入 ===== -->
+<div class="section">
+  <div class="section-title">四、买入 buy（09:28:10 / 14:50）</div>
+  <div class="mermaid">
+graph TD
+    A["buy()"] --> B{星期几?}
+    B -->|"周一~周四 + 下午"| SKIP["不执行买入<br/>return"]
+    B -->|"周一~周四 + 早盘"| C["进入选股流程"]
+    B -->|"周五 + 早盘"| FRI_AM["仅筛选不买入<br/>保存子列表到 g<br/>return"]
+    B -->|"周五 + 下午"| FRI_PM["周五14:50建仓"]
+
+    C --> D["5类模式筛选"]
+    D --> D1["连板龙头 lblt<br/>最高连板 M 龙头<br/>排除一字板风险<br/>换手&lt;35%, 独食&lt;10<br/>条件: 上升周期/资金接力/题材初期"]
+    D --> D2["弱转强 rzq<br/>前3日涨幅&lt;28%<br/>集合竞价量比≥3%<br/>竞价比例 0.98~1.09<br/>主线分>0"]
+    D --> D3["一进二 yje<br/>高开 1.00~1.06<br/>价格&lt;47元<br/>量比 1.15~6.58"]
+    D --> D4["首板低开 dk<br/>相对位置≤0.5<br/>低开 0.955~0.97<br/>成交额≥1亿"]
+    D --> D5["反向首板低开 fxsbdk<br/>排除连板<br/>相对位置≤0.5<br/>高开 1.04~1.10"]
+
+    D1 --> E["合并候选股"]
+    D2 --> E
+    D3 --> E
+    D4 --> E
+    D5 --> E
+    E --> F["filter_stocks_by_score_optimized<br/>6因子评分 ≥ 14分"]
+    F --> G["按优先级排序<br/>priority_config"]
+    G --> H["排除已涨停"]
+    H --> I["仓位分配<br/>value = min(cash/N, total*30%)"]
+    I --> J["safe_buy 逐只买入"]
+
+    FRI_PM --> K{"g.qualified_stocks 存在?"}
+    K -->|否| SKIP2["return"]
+    K -->|是| L["optimize_friday_trading_logic<br/>二次筛选"]
+    L --> M{"筛选条件<br/>评分≥16, 量能比≥1.0<br/>波动率≤2%, 价格≥MA5*0.98<br/>开盘价>现价*1.02"}
+    M --> I
+
+    style A fill:#238636,stroke:#3fb950,color:#fff
+    style SKIP fill:#484f58,stroke:#8b949e,color:#fff
+    style SKIP2 fill:#484f58,stroke:#8b949e,color:#fff
+    style FRI_AM fill:#e3b341,stroke:#d29922,color:#000
+    style FRI_PM fill:#238636,stroke:#3fb950,color:#fff
+    style D1 fill:#1f6feb,stroke:#58a6ff,color:#fff
+    style D2 fill:#1f6feb,stroke:#58a6ff,color:#fff
+    style D3 fill:#1f6feb,stroke:#58a6ff,color:#fff
+    style D4 fill:#1f6feb,stroke:#58a6ff,color:#fff
+    style D5 fill:#1f6feb,stroke:#58a6ff,color:#fff
+    style F fill:#8957e5,stroke:#a371f7,color:#fff
+    style J fill:#238636,stroke:#3fb950,color:#fff
+    style L fill:#8957e5,stroke:#a371f7,color:#fff
+  </div>
+</div>
+
+<!-- ===== 5. 评分系统 ===== -->
+<div class="section">
+  <div class="section-title">五、6因子评分系统（filter_stocks_by_score_optimized）</div>
+  <div class="mermaid">
+graph TD
+    A["候选股列表"] --> B["批量获取资金流数据<br/>get_money_flow_map"]
+    B --> C["逐只计算6因子评分"]
+
+    C --> F1["Factor1 涨停因子 0~5分<br/>昨日涨停 +3<br/>冲板未封 +2<br/>放量涨停 +2"]
+    C --> F2["Factor2 技术因子 0~10分<br/>近10日涨停数 0~5<br/>MA多头排列 0~2<br/>RSI 30-70 0~2<br/>价格位置 0~1"]
+    C --> F3["Factor3 放量MA因子 0~5分<br/>MA5上穿MA10 0~3<br/>放量确认 0~2"]
+    C --> F4["Factor4 主线因子 0~5分<br/>热门概念匹配度"]
+    C --> F5["Factor5 情绪因子 0~5分<br/>市场趋势 0~2<br/>市场成交量 0~2<br/>个股相对强度 0~1"]
+    C --> F6["Factor6 主力资金因子 0~10分<br/>流入比例 40%权重<br/>绝对规模 20%权重<br/>资金模式 40%权重"]
+
+    F1 --> G["总分 = F1+F2+F3+F4+F5+F6<br/>满分 40分"]
+    F2 --> G
+    F3 --> G
+    F4 --> G
+    F5 --> G
+    F6 --> G
+
+    G --> H{"总分 ≥ 14?"}
+    H -->|否| I["淘汰"]
+    H -->|是| J{"模式附加过滤"}
+    J --> J1["连板龙头: 主线>0<br/>且(资金>0 或 涨停≥5)<br/>量比 1.184~10.5"]
+    J --> J2["弱转强/首板低开:<br/>总分≥20<br/>量比 1.072~3.68"]
+    J --> J3["一进二: 总分 20~37<br/>量比 1.072~10.5"]
+    J --> J4["反向首板低开:<br/>总分≥20<br/>量比 1.072~3.68"]
+
+    J1 --> K["通过 → 缓存到 g.score_cache"]
+    J2 --> K
+    J3 --> K
+    J4 --> K
+
+    style A fill:#238636,stroke:#3fb950,color:#fff
+    style F1 fill:#da3633,stroke:#f85149,color:#fff
+    style F2 fill:#1f6feb,stroke:#58a6ff,color:#fff
+    style F3 fill:#e3b341,stroke:#d29922,color:#000
+    style F4 fill:#8957e5,stroke:#a371f7,color:#fff
+    style F5 fill:#f0883e,stroke:#d29922,color:#fff
+    style F6 fill:#238636,stroke:#3fb950,color:#fff
+    style G fill:#484f58,stroke:#8b949e,color:#fff
+    style I fill:#484f58,stroke:#8b949e,color:#fff
+  </div>
+</div>
+
+<!-- ===== 6. 卖出体系 ===== -->
+<div class="section">
+  <div class="section-title">六、三层卖出体系</div>
+  <div class="mermaid">
+graph TD
+    subgraph Layer1["第一层: sell_limit_down 集合竞价卖出 09:28"]
+        SLD_A["遍历持仓"] --> SLD_B{"closeable_amount > 0?"}
+        SLD_B -->|否| SLD_SKIP["跳过"]
+        SLD_B -->|是| SLD_C{"策略1: 涨停低开快速卖出<br/>昨日涨停 + 今日低开-3%~-1%<br/>市值50~100亿 或 PE&lt;20"}
+        SLD_C -->|触发| SLD_D["safe_sell → 清仓"]
+        SLD_C -->|未触发| SLD_E{"策略2: 放量长上影开盘卖出<br/>上影>下影×1.2, 上影>实体×1.5<br/>昨量>5日均量×1.5<br/>开盘涨幅&lt;2%"}
+        SLD_E -->|触发| SLD_D
+    end
+
+    subgraph Layer2["第二层: sell_limit_per5min 每5分钟检测"]
+        SLP_A["遍历持仓"] --> SLP_B["calculate_ths_indicators<br/>波段卖信号?"]
+        SLP_A --> SLP_C["check_volume_drop_signal<br/>放量大跌? (跌≥6%, 量比≥1.5)"]
+        SLP_B --> SLP_D{"紧急: 波段卖 + 放量跌"}
+        SLP_C --> SLP_D
+        SLP_D -->|是| SLP_E["safe_sell → 清仓"]
+        SLP_D -->|否| SLP_F{"波段卖 + 亏损≥3%?"}
+        SLP_F -->|是| SLP_E
+        SLP_F -->|否| SLP_G{"放量大跌 + 跌幅≥8%?"}
+        SLP_G -->|是| SLP_E
+    end
+
+    subgraph Layer3["第三层: sell2 定时策略卖出 (互斥: 一只票只触发一个)"]
+        S2_A["遍历持仓<br/>sold = False"] --> S2_T1{"T+1 保护?"}
+        S2_T1 -->|当天买入| S2_SKIP["跳过"]
+        S2_T1 -->|非当天| S2_AM{"上午?"}
+
+        S2_AM -->|是| S2_B{"策略1: 月初不涨停时间止损<br/>10日涨幅>80% + 月初 + 未涨停"}
+        S2_B -->|触发| S2_SELL["safe_sell → 清仓<br/>sold = True"]
+        S2_B -->|未触发| S2_C{"策略2: 低于昨日收盘价"}
+        S2_C -->|触发| S2_SELL
+
+        S2_AM -->|否| S2_PM{"下午?"}
+        S2_PM -->|是 + not sold| S2_D{"策略3: 止损卖出<br/>亏损≥5% 或 涨停回撤≥15%"}
+        S2_D -->|触发| S2_SELL
+        S2_D -->|未触发| S2_E{"策略4: 跌破MA5均线"}
+        S2_E -->|触发| S2_SELL
+
+        S2_PM -->|not sold| S2_F{"策略5: 量价顶背离<br/>24根30分K线<br/>创新高 + 量能≤50%<br/>回撤>3%"}
+        S2_E -->|not sold| S2_F
+        S2_C -->|not sold| S2_F
+        S2_F -->|触发| S2_SELL
+    end
+
+    style Layer1 fill:#1c2128,stroke:#da3633,color:#c9d1d9
+    style Layer2 fill:#1c2128,stroke:#f0883e,color:#c9d1d9
+    style Layer3 fill:#1c2128,stroke:#e3b341,color:#c9d1d9
+    style SLD_D fill:#da3633,stroke:#f85149,color:#fff
+    style SLP_E fill:#da3633,stroke:#f85149,color:#fff
+    style S2_SELL fill:#da3633,stroke:#f85149,color:#fff
+  </div>
+</div>
+
+<!-- ===== 7. 风控体系 ===== -->
+<div class="section">
+  <div class="section-title">七、风控体系</div>
+  <div class="mermaid">
+graph TD
+    subgraph Risk["风险控制"]
+        R1["仓位控制<br/>最大持仓 5 只<br/>单票上限 30% 总资产"]
+        R2["涨跌停保护<br/>safe_buy: 涨停不买<br/>safe_sell: 跌停不卖"]
+        R3["T+1 保护<br/>当天买入不卖出"]
+        R4["大盘空仓<br/>连续2日量能异常<br/>全部清仓"]
+        R5["停牌保护<br/>停牌股票跳过<br/>买卖操作"]
+    end
+
+    subgraph StopLoss["止损层级"]
+        SL1["集合竞价<br/>涨停低开 / 放量长上影"]
+        SL2["盘中5分钟<br/>波段信号 + 放量大跌"]
+        SL3["盘中15分钟<br/>固定止损5% / MA5"]
+        SL4["尾盘<br/>涨停回撤15%"]
+    end
+
+    SL1 --> SL2 --> SL3 --> SL4
+
+    style Risk fill:#1c2128,stroke:#58a6ff,color:#c9d1d9
+    style StopLoss fill:#1c2128,stroke:#da3633,color:#c9d1d9
+    style R1 fill:#1f6feb,stroke:#58a6ff,color:#fff
+    style R2 fill:#238636,stroke:#3fb950,color:#fff
+    style R3 fill:#e3b341,stroke:#d29922,color:#000
+    style R4 fill:#da3633,stroke:#f85149,color:#fff
+    style R5 fill:#8957e5,stroke:#a371f7,color:#fff
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: 'dark',
+    themeVariables: {
+      darkMode: true,
+      background: '#161b22',
+      primaryColor: '#1f6feb',
+      primaryTextColor: '#fff',
+      lineColor: '#484f58',
+      fontFamily: '-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif',
+      fontSize: '13px'
+    },
+    flowchart: {
+      useMaxWidth: true,
+      htmlLabels: true,
+      curve: 'basis',
+      padding: 15,
+      nodeSpacing: 30,
+      rankSpacing: 40
+    }
+  });
+</script>
+</body>
+</html>

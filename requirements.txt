@@ -1,0 +1,6 @@
+tushare
+akshare
+pandas
+numpy
+requests
+apscheduler

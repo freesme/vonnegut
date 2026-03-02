@@ -1,0 +1,15 @@
+services:
+  trader:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        BASE_IMAGE: ${BASE_IMAGE:-python:3.11-slim}
+    container_name: jukuantrader
+    env_file:
+      - .env
+    volumes:
+      - ./data_store:/app/data_store
+      - ./logs:/app/logs
+    restart: unless-stopped
+    command: ["python", "main.py"]
