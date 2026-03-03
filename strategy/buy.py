@@ -21,10 +21,13 @@ from strategy.stock_select import (
 from utils.logger import log
 
 
-def buy(ctx: Context):
+def buy(ctx: Context, *, force_morning: bool = False):
     """
     买入主入口，每日 09:28:10 和 14:50 调用。
     周一~四早盘执行买入，周五早盘仅筛选，周五下午执行买入。
+
+    Args:
+        force_morning: 为 True 时强制按早盘逻辑执行（跳过时段检查），用于补跑场景。
     """
     if state.is_empty:
         return
@@ -33,6 +36,11 @@ def buy(ctx: Context):
     portfolio = ctx.portfolio
     weekday = ctx.current_dt.weekday()
     is_morning, is_afternoon, _ = get_trading_time_status(ctx)
+
+    if force_morning:
+        is_morning = True
+        is_afternoon = False
+        log.info("强制早盘模式（补跑）")
 
     # 周一~四 14:50 不买
     if weekday < 4 and is_afternoon:
@@ -278,6 +286,8 @@ def _optimize_friday(ctx: Context, candidates: list[str]) -> list[str]:
 
 def _execute_buy(ctx: Context, sorted_stocks: list[str], quotes: dict):
     """仓位分配并发射买入信号。"""
+    from notify.signal import emit_signal, emit_message
+
     portfolio = ctx.portfolio
     if portfolio is None:
         return
@@ -285,12 +295,35 @@ def _execute_buy(ctx: Context, sorted_stocks: list[str], quotes: dict):
     available = portfolio.available_cash
     held = len(portfolio.positions)
     available_positions = state.position_limit - held
+
+    # 为所有候选股先发出 CANDIDATE 信号
+    for s in sorted_stocks:
+        q = quotes.get(s)
+        price = q.last_price if q else 0
+        reason = get_buy_reason(s)
+        emit_signal("BUY", s, price, reason, ctx, status="CANDIDATE")
+
     if available_positions <= 0:
         log.info(f"已达最大持仓限制 {state.position_limit}")
+        # 全部标记为 SKIPPED
+        for s in sorted_stocks:
+            q = quotes.get(s)
+            price = q.last_price if q else 0
+            emit_signal("BUY", s, price, "仓位已满", ctx, status="SKIPPED")
         return
 
     # 排除涨停
-    candidates = [s for s in sorted_stocks if not is_at_limit_up(s, quotes)]
+    at_limit = set()
+    candidates = []
+    for s in sorted_stocks:
+        if is_at_limit_up(s, quotes):
+            at_limit.add(s)
+            q = quotes.get(s)
+            price = q.last_price if q else 0
+            emit_signal("BUY", s, price, "涨停无法买入", ctx, status="SKIPPED")
+        else:
+            candidates.append(s)
+
     buy_count = min(len(candidates), available_positions)
     if buy_count <= 0:
         log.info("无可买入股票或仓位已满")
@@ -302,28 +335,36 @@ def _execute_buy(ctx: Context, sorted_stocks: list[str], quotes: dict):
     log.info(f"仓位分配: 可用{available:.0f}, 买{buy_count}只, 每只{value:.0f}(上限{max_single:.0f})")
 
     bought = 0
-    from notify.signal import emit_signal
     for s in candidates[:buy_count]:
         q = quotes.get(s)
         if q is None:
+            emit_signal("BUY", s, 0, "无行情数据", ctx, status="SKIPPED")
             continue
         if available < q.last_price * 100:
+            emit_signal("BUY", s, q.last_price, "资金不足", ctx, status="SKIPPED")
             continue
 
         qty = int(value / q.last_price / 100) * 100
         if qty <= 0:
+            emit_signal("BUY", s, q.last_price, "计算股数为0", ctx, status="SKIPPED")
             continue
 
         reason = get_buy_reason(s)
         date_str = ctx.current_dt.strftime("%Y-%m-%d")
         record_buy_trade(ctx, s, reason, q.last_price, qty, date_str)
-        emit_signal("BUY", s, q.last_price, f"{reason} 数量:{qty}", ctx)
+        emit_signal("BUY", s, q.last_price, f"{reason} 数量:{qty}", ctx, status="EXECUTED")
         bought += 1
+
+    # 超出仓位的候选标记为 SKIPPED
+    for s in candidates[buy_count:]:
+        q = quotes.get(s)
+        price = q.last_price if q else 0
+        emit_signal("BUY", s, price, "超出仓位限制", ctx, status="SKIPPED")
 
     if bought == 0:
         log.info("本次未买入任何股票")
-        from notify.signal import emit_message
         emit_message("本次未买入任何股票", ctx)
+
 
 
 def _print_selection(qualified, lblt, rzq, gk, dk, fxsbdk):

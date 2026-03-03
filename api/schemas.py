@@ -92,6 +92,7 @@ class SignalItem(BaseModel):
     stock: str
     price: float
     reason: str
+    status: str = "EXECUTED"   # CANDIDATE / EXECUTED / SKIPPED
     time: dt.datetime
 
 
@@ -131,6 +132,21 @@ class ScanResult(BaseModel):
     qualified: list[str]
     details: list[ScanStockDetail]
     market: dict
+
+
+class CatchupStep(BaseModel):
+    name: str
+    status: str
+    elapsed: float
+
+
+class CatchupResult(BaseModel):
+    steps: list[CatchupStep]
+    market: dict = {}
+    candidates: list[str] = []
+    qualified: list[str] = []
+    details: list[ScanStockDetail] = []
+    buy_signals: list[dict] = []
 
 
 # ======================================================================

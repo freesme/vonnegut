@@ -21,6 +21,16 @@ def _conn():
     return psycopg2.connect(config.DATABASE_URL)
 
 
+def _query_to_df(sql: str, conn, params=None) -> pd.DataFrame:
+    """使用 cursor 执行查询并返回 DataFrame（避免 pandas read_sql 的 SQLAlchemy 警告）。"""
+    cur = conn.cursor()
+    cur.execute(sql, params)
+    rows = cur.fetchall()
+    cols = [desc[0] for desc in cur.description] if cur.description else []
+    cur.close()
+    return pd.DataFrame(rows, columns=cols) if rows else pd.DataFrame(columns=cols)
+
+
 def _ensure_tables():
     conn = _conn()
     cur = conn.cursor()
@@ -78,7 +88,7 @@ def get_cached_daily(
             f"SELECT {cols} FROM daily_price "
             f"WHERE code=%s AND trade_date>=%s AND trade_date<=%s ORDER BY trade_date"
         )
-        df = pd.read_sql_query(sql, conn, params=(code, start_date, end_date))
+        df = _query_to_df(sql, conn, params=(code, start_date, end_date))
         conn.close()
     if df.empty:
         return None
@@ -169,7 +179,7 @@ def get_cached_daily_bulk(trade_date: str) -> pd.DataFrame:
     """一次查询返回某日全市场日线，columns 含 code + OHLCV + 涨跌停。"""
     with _lock:
         conn = _conn()
-        df = pd.read_sql_query(
+        df = _query_to_df(
             "SELECT * FROM daily_price WHERE trade_date=%s",
             conn,
             params=(trade_date,),

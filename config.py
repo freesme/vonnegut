@@ -74,7 +74,7 @@ API_PORT = int(os.environ.get("API_PORT", "8000"))
 # ---------------------------------------------------------------------------
 # JWT 鉴权
 # ---------------------------------------------------------------------------
-JWT_SECRET_KEY = os.environ.get("JWT_SECRET_KEY", "hotstock-dev-secret-change-me")
+JWT_SECRET_KEY = os.environ.get("JWT_SECRET_KEY", "hotstock-dev-secret-please-change-in-production")
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRE_MINUTES = int(os.environ.get("JWT_EXPIRE_MINUTES", "1440"))  # 默认 24 小时
 

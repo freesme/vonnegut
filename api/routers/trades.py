@@ -13,7 +13,8 @@ router = APIRouter(prefix="/trades", tags=["交易"])
 
 
 @router.get("/signals", response_model=list[SignalItem], summary="今日交易信号")
-def today_signals():
+def today_signals(status: str | None = None):
+    """查询今日信号。可选 status 过滤: CANDIDATE / EXECUTED / SKIPPED"""
     from notify.signal import get_today_signals
 
     return [
@@ -22,9 +23,10 @@ def today_signals():
             stock=s.stock,
             price=s.price,
             reason=s.reason,
+            status=s.status,
             time=s.time,
         )
-        for s in get_today_signals()
+        for s in get_today_signals(status=status)
     ]
 
 

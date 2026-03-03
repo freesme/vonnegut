@@ -515,6 +515,167 @@ def quick_scan(min_score: int | None = None) -> list[dict]:
 
 
 # ======================================================================
+# 一键补跑早盘流程
+# ======================================================================
+
+def morning_catchup(
+    ctx: Context | None = None,
+    notify: bool = False,
+) -> dict:
+    """
+    补跑完整早盘流程（盘前统计 → 选股 → 竞价卖出检测 → 买入信号）。
+
+    如果错过 09:25~09:28 的定时任务窗口，可随时手动调用。
+    会依次执行 scheduler 中四个早盘任务的核心逻辑。
+
+    Args:
+        ctx: 如通过 API 调用可传入已有 Context，否则自动创建。
+        notify: 是否推送结果通知。
+
+    Returns:
+        dict: {
+            "steps": [{"name": ..., "status": ..., "elapsed": ...}, ...],
+            "market": {...},
+            "candidates": [...],
+            "qualified": [...],
+            "details": [...],
+            "buy_signals": [...],
+        }
+    """
+    setup_logging(config.LOG_DIR)
+
+    if ctx is None:
+        dp = create_provider()
+        portfolio = PortfolioTracker()
+        ctx = Context(dp=dp, portfolio=portfolio)
+    ctx.update_time()
+
+    from strategy.core import record_morning_stats as _record_morning
+    from strategy.stock_select import get_stock_list as _get_stock_list
+    from strategy.sell_rules import sell_limit_down as _sell_limit_down
+    from strategy.buy import buy as _buy
+
+    log.info("=" * 60)
+    log.info("一键补跑早盘流程")
+    log.info(f"当前时间: {ctx.current_dt.strftime('%Y-%m-%d %H:%M:%S')}")
+    log.info("=" * 60)
+
+    steps = []
+    result: dict = {
+        "steps": steps,
+        "market": {},
+        "candidates": [],
+        "qualified": [],
+        "details": [],
+        "buy_signals": [],
+    }
+
+    # Step 1: 盘前统计
+    t0 = time.time()
+    log.info("▶ [1/4] 盘前统计（市场趋势 + 策略优先级）")
+    try:
+        _record_morning(ctx)
+        market_stats = state.trade_stats.get("market_stats", {})
+        result["market"] = market_stats
+        trend = market_stats.get("trend", "unknown")
+        log.info(f"  趋势: {trend} | 优先级: {' > '.join(state.priority_config)}")
+        steps.append({"name": "盘前统计", "status": "ok", "elapsed": round(time.time() - t0, 1)})
+    except Exception as e:
+        log.error(f"  盘前统计失败: {e}")
+        steps.append({"name": "盘前统计", "status": f"error: {e}", "elapsed": round(time.time() - t0, 1)})
+
+    # Step 2: 选股池生成
+    t0 = time.time()
+    log.info("▶ [2/4] 选股池生成（全 A 筛选 → 涨停/跌停分类）")
+    try:
+        _get_stock_list(ctx)
+        total = len(state.lblt) + len(state.reversal) + len(state.gap_up) + len(state.gap_down) + len(state.fxsbdk)
+        result["candidates"] = list(set(
+            state.lblt + state.reversal + state.gap_up + state.gap_down + state.fxsbdk
+        ))
+        log.info(f"  选股池 {total} 只: 连板{len(state.lblt)}, 弱转强{len(state.reversal)}, "
+                 f"一进二{len(state.gap_up)}, 首板低开{len(state.gap_down)}, 反向首板{len(state.fxsbdk)}")
+        steps.append({"name": "选股池生成", "status": "ok", "elapsed": round(time.time() - t0, 1)})
+    except Exception as e:
+        log.error(f"  选股池生成失败: {e}")
+        steps.append({"name": "选股池生成", "status": f"error: {e}", "elapsed": round(time.time() - t0, 1)})
+
+    # Step 3: 竞价卖出检测（针对已持仓）
+    t0 = time.time()
+    log.info("▶ [3/4] 竞价卖出检测（持仓股）")
+    try:
+        _sell_limit_down(ctx)
+        steps.append({"name": "竞价卖出检测", "status": "ok", "elapsed": round(time.time() - t0, 1)})
+    except Exception as e:
+        log.error(f"  竞价卖出检测失败: {e}")
+        steps.append({"name": "竞价卖出检测", "status": f"error: {e}", "elapsed": round(time.time() - t0, 1)})
+
+    # Step 4: 买入信号生成
+    t0 = time.time()
+    log.info("▶ [4/4] 买入信号生成")
+    try:
+        _buy(ctx, force_morning=True)
+        result["qualified"] = list(state.qualified_stocks) if state.qualified_stocks else []
+
+        # 采集买入信号
+        from notify.signal import get_today_signals
+        buy_signals = [
+            {"stock": s.stock, "price": s.price, "reason": s.reason,
+             "time": s.time.isoformat() if hasattr(s.time, "isoformat") else str(s.time)}
+            for s in get_today_signals() if s.type.upper() == "BUY"
+        ]
+        result["buy_signals"] = buy_signals
+        steps.append({"name": "买入信号", "status": "ok", "elapsed": round(time.time() - t0, 1)})
+    except Exception as e:
+        log.error(f"  买入信号生成失败: {e}")
+        steps.append({"name": "买入信号", "status": f"error: {e}", "elapsed": round(time.time() - t0, 1)})
+
+    # 组装详情
+    for s in result["qualified"]:
+        cached = state.score_cache.get(s, {})
+        info = ctx.dp.get_security_info(s)
+        pattern = _get_pattern(s)
+        result["details"].append({
+            "stock": s,
+            "name": info.display_name,
+            "pattern": pattern,
+            "total_score": cached.get("total_score", 0),
+            "f1_limit_up": cached.get("factor1_limit_up", 0),
+            "f2_technical": cached.get("factor2_technical", 0),
+            "f3_volume_ma": cached.get("factor3_volume_ma", 0),
+            "f4_mainline": cached.get("factor4_mainline", 0),
+            "f5_sentiment": cached.get("factor5_sentiment", 0),
+            "f6_main_force": cached.get("factor6_main_force", 0),
+        })
+
+    # 耗时汇总
+    total_elapsed = sum(s["elapsed"] for s in steps)
+    log.info("-" * 40)
+    for s in steps:
+        status_icon = "✓" if s["status"] == "ok" else "✗"
+        log.info(f"  {status_icon} {s['name']}: {s['elapsed']:.1f}s")
+    log.info(f"  合计: {total_elapsed:.1f}s")
+
+    # 输出结果表格（复用已有输出函数）
+    if result["details"]:
+        _print_results(result["qualified"], result["details"], result.get("market", {}))
+
+    # 可选推送
+    if notify and result["qualified"]:
+        from notify.signal import emit_message
+        lines = [f"早盘补跑 {ctx.current_dt.strftime('%H:%M')}"]
+        trend = result.get("market", {}).get("trend", "?")
+        lines.append(f"趋势: {trend} | 候选: {len(result['qualified'])} 只")
+        for d in result["details"]:
+            lines.append(f"  {d['name']}({d['stock']}) {d['pattern']} {d['total_score']:.0f}分")
+        if result["buy_signals"]:
+            lines.append(f"买入信号: {len(result['buy_signals'])} 条")
+        emit_message("\n".join(lines), ctx)
+
+    return result
+
+
+# ======================================================================
 # CLI 入口
 # ======================================================================
 
@@ -523,9 +684,15 @@ if __name__ == "__main__":
     parser.add_argument("--notify", action="store_true", help="选股后推送通知")
     parser.add_argument("--score-only", action="store_true", help="仅对已有候选池重新评分")
     parser.add_argument("--min-score", type=int, default=None, help="自定义最低评分阈值")
+    parser.add_argument("--catchup", action="store_true",
+                        help="一键补跑完整早盘流程（盘前统计→选股→卖出检测→买入信号）")
     args = parser.parse_args()
 
     start = time.time()
-    scan(notify=args.notify, min_score=args.min_score, score_only=args.score_only)
+    if args.catchup:
+        morning_catchup(notify=args.notify)
+    else:
+        scan(notify=args.notify, min_score=args.min_score, score_only=args.score_only)
     elapsed = time.time() - start
     print(f"耗时: {elapsed:.1f}s")
+

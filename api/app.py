@@ -1,5 +1,9 @@
 """
 FastAPI 应用工厂 + 共享状态依赖注入。
+
+支持两种启动方式：
+1. 嵌入模式：main.py 传入 ctx, scheduler → create_app(ctx, scheduler)
+2. 独立模式：uvicorn --reload --factory → create_app() 自动构建 Context
 """
 from __future__ import annotations
 
@@ -15,7 +19,7 @@ if TYPE_CHECKING:
 
 
 def create_app(
-    ctx: "Context",
+    ctx: "Context | None" = None,
     scheduler: "BackgroundScheduler | None" = None,
 ) -> FastAPI:
     app = FastAPI(
@@ -23,6 +27,21 @@ def create_app(
         version="1.0.0",
         description="A 股涨停板策略本地信号系统 API",
     )
+
+    # 独立模式：自动构建 Context
+    if ctx is None:
+        import config
+        from data import create_provider
+        from portfolio.tracker import PortfolioTracker as PT
+        from strategy.core import Context as Ctx
+        from utils.logger import log, setup_logging
+
+        setup_logging(config.LOG_DIR)
+        dp = create_provider()
+        portfolio = PT()
+        ctx = Ctx(dp=dp, portfolio=portfolio)
+        ctx.update_time()
+        log.info("API 独立模式：已自动创建 Context")
 
     app.state.ctx = ctx
     app.state.scheduler = scheduler
