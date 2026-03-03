@@ -1,51 +1,61 @@
 """
-SQLite 本地缓存层。
+PostgreSQL 本地缓存层。
 历史日K线、估值、证券信息等只拉一次，后续读缓存。
 """
 from __future__ import annotations
 
 import datetime as dt
 import json
-import sqlite3
 import threading
-from pathlib import Path
 
 import pandas as pd
+import psycopg2
+import psycopg2.extras
 
 import config
 
 _lock = threading.Lock()
 
 
-def _conn() -> sqlite3.Connection:
-    return sqlite3.connect(str(config.DB_PATH), check_same_thread=False)
+def _conn():
+    return psycopg2.connect(config.DATABASE_URL)
 
 
 def _ensure_tables():
     conn = _conn()
-    conn.executescript("""
+    cur = conn.cursor()
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS daily_price (
             code TEXT, trade_date TEXT,
-            open REAL, high REAL, low REAL, close REAL,
-            volume REAL, amount REAL,
-            high_limit REAL, low_limit REAL,
-            pre_close REAL,
+            open DOUBLE PRECISION, high DOUBLE PRECISION,
+            low DOUBLE PRECISION, close DOUBLE PRECISION,
+            volume DOUBLE PRECISION, amount DOUBLE PRECISION,
+            high_limit DOUBLE PRECISION, low_limit DOUBLE PRECISION,
+            pre_close DOUBLE PRECISION,
             PRIMARY KEY (code, trade_date)
-        );
+        )
+    """)
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS valuation (
             code TEXT, trade_date TEXT,
-            pe_ratio REAL, pb_ratio REAL, ps_ratio REAL,
-            market_cap REAL, circulating_market_cap REAL,
-            turnover_ratio REAL,
+            pe_ratio DOUBLE PRECISION, pb_ratio DOUBLE PRECISION,
+            ps_ratio DOUBLE PRECISION,
+            market_cap DOUBLE PRECISION,
+            circulating_market_cap DOUBLE PRECISION,
+            turnover_ratio DOUBLE PRECISION,
             PRIMARY KEY (code, trade_date)
-        );
+        )
+    """)
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS security_info (
             code TEXT PRIMARY KEY,
             display_name TEXT,
             start_date TEXT, end_date TEXT,
             concepts TEXT
-        );
+        )
     """)
+    conn.commit()
+    cur.close()
     conn.close()
 
 
@@ -66,7 +76,7 @@ def get_cached_daily(
             cols = "*"
         sql = (
             f"SELECT {cols} FROM daily_price "
-            f"WHERE code=? AND trade_date>=? AND trade_date<=? ORDER BY trade_date"
+            f"WHERE code=%s AND trade_date>=%s AND trade_date<=%s ORDER BY trade_date"
         )
         df = pd.read_sql_query(sql, conn, params=(code, start_date, end_date))
         conn.close()
@@ -83,13 +93,19 @@ def save_daily(code: str, df: pd.DataFrame):
         return
     with _lock:
         conn = _conn()
+        cur = conn.cursor()
         for idx, row in df.iterrows():
             trade_date = idx.strftime("%Y-%m-%d") if hasattr(idx, "strftime") else str(idx)
-            conn.execute(
-                """INSERT OR REPLACE INTO daily_price
+            cur.execute(
+                """INSERT INTO daily_price
                    (code, trade_date, open, high, low, close, volume, amount,
                     high_limit, low_limit, pre_close)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                   ON CONFLICT (code, trade_date) DO UPDATE SET
+                    open=EXCLUDED.open, high=EXCLUDED.high, low=EXCLUDED.low,
+                    close=EXCLUDED.close, volume=EXCLUDED.volume, amount=EXCLUDED.amount,
+                    high_limit=EXCLUDED.high_limit, low_limit=EXCLUDED.low_limit,
+                    pre_close=EXCLUDED.pre_close""",
                 (
                     code, trade_date,
                     row.get("open"), row.get("high"), row.get("low"), row.get("close"),
@@ -99,6 +115,7 @@ def save_daily(code: str, df: pd.DataFrame):
                 ),
             )
         conn.commit()
+        cur.close()
         conn.close()
 
 
@@ -108,14 +125,22 @@ def batch_save_daily(rows: list[tuple]):
         return
     with _lock:
         conn = _conn()
-        conn.executemany(
-            """INSERT OR REPLACE INTO daily_price
+        cur = conn.cursor()
+        psycopg2.extras.execute_values(
+            cur,
+            """INSERT INTO daily_price
                (code, trade_date, open, high, low, close, volume, amount,
                 high_limit, low_limit, pre_close)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+               VALUES %s
+               ON CONFLICT (code, trade_date) DO UPDATE SET
+                open=EXCLUDED.open, high=EXCLUDED.high, low=EXCLUDED.low,
+                close=EXCLUDED.close, volume=EXCLUDED.volume, amount=EXCLUDED.amount,
+                high_limit=EXCLUDED.high_limit, low_limit=EXCLUDED.low_limit,
+                pre_close=EXCLUDED.pre_close""",
             rows,
         )
         conn.commit()
+        cur.close()
         conn.close()
 
 
@@ -129,10 +154,13 @@ def has_daily_date(trade_date: str, min_count: int = 500) -> bool:
     """
     with _lock:
         conn = _conn()
-        row = conn.execute(
-            "SELECT COUNT(*) FROM daily_price WHERE trade_date=?",
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT COUNT(*) FROM daily_price WHERE trade_date=%s",
             (trade_date,),
-        ).fetchone()
+        )
+        row = cur.fetchone()
+        cur.close()
         conn.close()
     return row is not None and row[0] >= min_count
 
@@ -142,7 +170,7 @@ def get_cached_daily_bulk(trade_date: str) -> pd.DataFrame:
     with _lock:
         conn = _conn()
         df = pd.read_sql_query(
-            "SELECT * FROM daily_price WHERE trade_date=?",
+            "SELECT * FROM daily_price WHERE trade_date=%s",
             conn,
             params=(trade_date,),
         )
@@ -156,9 +184,12 @@ def get_cached_daily_bulk(trade_date: str) -> pd.DataFrame:
 def get_cached_valuation(code: str, date: str) -> dict | None:
     with _lock:
         conn = _conn()
-        row = conn.execute(
-            "SELECT * FROM valuation WHERE code=? AND trade_date=?", (code, date)
-        ).fetchone()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT * FROM valuation WHERE code=%s AND trade_date=%s", (code, date)
+        )
+        row = cur.fetchone()
+        cur.close()
         conn.close()
     if row is None:
         return None
@@ -170,11 +201,17 @@ def get_cached_valuation(code: str, date: str) -> dict | None:
 def save_valuation(code: str, date: str, data: dict):
     with _lock:
         conn = _conn()
-        conn.execute(
-            """INSERT OR REPLACE INTO valuation
+        cur = conn.cursor()
+        cur.execute(
+            """INSERT INTO valuation
                (code, trade_date, pe_ratio, pb_ratio, ps_ratio,
                 market_cap, circulating_market_cap, turnover_ratio)
-               VALUES (?,?,?,?,?,?,?,?)""",
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+               ON CONFLICT (code, trade_date) DO UPDATE SET
+                pe_ratio=EXCLUDED.pe_ratio, pb_ratio=EXCLUDED.pb_ratio,
+                ps_ratio=EXCLUDED.ps_ratio, market_cap=EXCLUDED.market_cap,
+                circulating_market_cap=EXCLUDED.circulating_market_cap,
+                turnover_ratio=EXCLUDED.turnover_ratio""",
             (
                 code, date,
                 data.get("pe_ratio"), data.get("pb_ratio"), data.get("ps_ratio"),
@@ -183,6 +220,7 @@ def save_valuation(code: str, date: str, data: dict):
             ),
         )
         conn.commit()
+        cur.close()
         conn.close()
 
 
@@ -192,9 +230,12 @@ def save_valuation(code: str, date: str, data: dict):
 def get_cached_security_info(code: str) -> dict | None:
     with _lock:
         conn = _conn()
-        row = conn.execute(
-            "SELECT * FROM security_info WHERE code=?", (code,)
-        ).fetchone()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT * FROM security_info WHERE code=%s", (code,)
+        )
+        row = cur.fetchone()
+        cur.close()
         conn.close()
     if row is None:
         return None
@@ -210,10 +251,14 @@ def get_cached_security_info(code: str) -> dict | None:
 def save_security_info(code: str, info: dict):
     with _lock:
         conn = _conn()
-        conn.execute(
-            """INSERT OR REPLACE INTO security_info
+        cur = conn.cursor()
+        cur.execute(
+            """INSERT INTO security_info
                (code, display_name, start_date, end_date, concepts)
-               VALUES (?,?,?,?,?)""",
+               VALUES (%s,%s,%s,%s,%s)
+               ON CONFLICT (code) DO UPDATE SET
+                display_name=EXCLUDED.display_name, start_date=EXCLUDED.start_date,
+                end_date=EXCLUDED.end_date, concepts=EXCLUDED.concepts""",
             (
                 code,
                 info.get("display_name", ""),
@@ -223,6 +268,7 @@ def save_security_info(code: str, info: dict):
             ),
         )
         conn.commit()
+        cur.close()
         conn.close()
 
 
@@ -230,24 +276,31 @@ def batch_save_security_info(items: list[dict]):
     """批量写入证券信息。每条 dict 需包含 code, display_name, start_date 等字段。"""
     if not items:
         return
+    rows = [
+        (
+            it["code"],
+            it.get("display_name", ""),
+            it.get("start_date", ""),
+            it.get("end_date", ""),
+            json.dumps(it.get("concepts", []), ensure_ascii=False),
+        )
+        for it in items
+    ]
     with _lock:
         conn = _conn()
-        conn.executemany(
-            """INSERT OR REPLACE INTO security_info
+        cur = conn.cursor()
+        psycopg2.extras.execute_values(
+            cur,
+            """INSERT INTO security_info
                (code, display_name, start_date, end_date, concepts)
-               VALUES (?,?,?,?,?)""",
-            [
-                (
-                    it["code"],
-                    it.get("display_name", ""),
-                    it.get("start_date", ""),
-                    it.get("end_date", ""),
-                    json.dumps(it.get("concepts", []), ensure_ascii=False),
-                )
-                for it in items
-            ],
+               VALUES %s
+               ON CONFLICT (code) DO UPDATE SET
+                display_name=EXCLUDED.display_name, start_date=EXCLUDED.start_date,
+                end_date=EXCLUDED.end_date, concepts=EXCLUDED.concepts""",
+            rows,
         )
         conn.commit()
+        cur.close()
         conn.close()
 
 
@@ -255,8 +308,11 @@ def get_all_cached_security_start_dates() -> dict[str, str]:
     """返回 {code: start_date} 映射，用于批量新股过滤。"""
     with _lock:
         conn = _conn()
-        rows = conn.execute(
+        cur = conn.cursor()
+        cur.execute(
             "SELECT code, start_date FROM security_info WHERE start_date != ''"
-        ).fetchall()
+        )
+        rows = cur.fetchall()
+        cur.close()
         conn.close()
     return {row[0]: row[1] for row in rows}

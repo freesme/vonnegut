@@ -22,10 +22,17 @@ if _env_path.exists():
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data_store"
 DATA_DIR.mkdir(exist_ok=True)
-DB_PATH = DATA_DIR / "cache.db"
 LOG_DIR = BASE_DIR / "logs"
 LOG_DIR.mkdir(exist_ok=True)
 PORTFOLIO_PATH = DATA_DIR / "portfolio.json"
+
+# ---------------------------------------------------------------------------
+# 数据库 (PostgreSQL)
+# ---------------------------------------------------------------------------
+DATABASE_URL = os.environ.get(
+    "DATABASE_URL",
+    "postgresql://hotstock:hotstock123@localhost:5432/hotstock_cache",
+)
 
 # ---------------------------------------------------------------------------
 # 数据源 API Token

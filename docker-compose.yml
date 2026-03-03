@@ -1,4 +1,22 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: hotstock-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-hotstock}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-hotstock123}
+      POSTGRES_DB: ${POSTGRES_DB:-hotstock_cache}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-hotstock} -d ${POSTGRES_DB:-hotstock_cache}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   trader:
     build:
       context: .
@@ -8,10 +26,18 @@ services:
     container_name: jukuantrader
     env_file:
       - .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-hotstock}:${POSTGRES_PASSWORD:-hotstock123}@postgres:5432/${POSTGRES_DB:-hotstock_cache}
     ports:
       - "${API_PORT:-8000}:${API_PORT:-8000}"
     volumes:
       - ./data_store:/app/data_store
       - ./logs:/app/logs
     restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
     command: ["python", "main.py"]
+
+volumes:
+  pgdata:

@@ -110,7 +110,7 @@ class TushareProvider(DataProvider):
                 r.get("pre_close"),
             ))
         cache.batch_save_daily(rows)
-        log.info(f"  已缓存 {len(rows)} 只日线到 SQLite ({time.time() - t2:.1f}s)")
+        log.info(f"  已缓存 {len(rows)} 只日线到 PostgreSQL ({time.time() - t2:.1f}s)")
 
     # ------------------------------------------------------------------
     # 历史行情

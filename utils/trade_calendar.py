@@ -1,44 +1,51 @@
 """
 交易日历工具，替代聚宽 get_trade_days / get_all_trade_days。
-首次调用时从 Tushare 或 AKShare 拉取交易日历并缓存到 SQLite。
+首次调用时从 Tushare 或 AKShare 拉取交易日历并缓存到 PostgreSQL。
 """
 import datetime as dt
-import sqlite3
-from pathlib import Path
+
+import psycopg2
 
 import config
 
-_DB = config.DB_PATH
 _TABLE = "trade_calendar"
 _calendar: list[dt.date] | None = None
 
 
-def _ensure_table(conn: sqlite3.Connection):
-    conn.execute(
+def _ensure_table(conn):
+    cur = conn.cursor()
+    cur.execute(
         f"CREATE TABLE IF NOT EXISTS {_TABLE} (trade_date TEXT PRIMARY KEY)"
     )
+    conn.commit()
+    cur.close()
 
 
 def _load_from_db() -> list[dt.date]:
-    if not Path(_DB).exists():
+    try:
+        conn = psycopg2.connect(config.DATABASE_URL)
+    except Exception:
         return []
-    conn = sqlite3.connect(str(_DB))
     _ensure_table(conn)
-    rows = conn.execute(
-        f"SELECT trade_date FROM {_TABLE} ORDER BY trade_date"
-    ).fetchall()
+    cur = conn.cursor()
+    cur.execute(f"SELECT trade_date FROM {_TABLE} ORDER BY trade_date")
+    rows = cur.fetchall()
+    cur.close()
     conn.close()
     return [dt.datetime.strptime(r[0], "%Y-%m-%d").date() for r in rows]
 
 
 def _save_to_db(dates: list[dt.date]):
-    conn = sqlite3.connect(str(_DB))
+    conn = psycopg2.connect(config.DATABASE_URL)
     _ensure_table(conn)
-    conn.executemany(
-        f"INSERT OR IGNORE INTO {_TABLE} (trade_date) VALUES (?)",
-        [(d.strftime("%Y-%m-%d"),) for d in dates],
-    )
+    cur = conn.cursor()
+    for d in dates:
+        cur.execute(
+            f"INSERT INTO {_TABLE} (trade_date) VALUES (%s) ON CONFLICT DO NOTHING",
+            (d.strftime("%Y-%m-%d"),),
+        )
     conn.commit()
+    cur.close()
     conn.close()
 
 

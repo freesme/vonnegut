@@ -6,3 +6,4 @@ requests
 apscheduler
 fastapi
 uvicorn[standard]
+psycopg2-binary
