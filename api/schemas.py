@@ -19,6 +19,25 @@ class ApiResult(BaseModel):
 
 
 # ======================================================================
+# 认证
+# ======================================================================
+
+class LoginRequest(BaseModel):
+    username: str = Field(..., min_length=1, examples=["admin"])
+    password: str = Field(..., min_length=1, examples=["admin123"])
+
+
+class RegisterRequest(BaseModel):
+    username: str = Field(..., min_length=3, max_length=32, examples=["trader01"])
+    password: str = Field(..., min_length=6, max_length=128)
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+
+
+# ======================================================================
 # 持仓
 # ======================================================================
 

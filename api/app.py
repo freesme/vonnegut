@@ -27,15 +27,21 @@ def create_app(
     app.state.ctx = ctx
     app.state.scheduler = scheduler
 
+    from api.auth import router as auth_router, verify_token
     from api.routers.market import router as market_router
     from api.routers.portfolio import router as portfolio_router
     from api.routers.scan import router as scan_router
     from api.routers.trades import router as trades_router
 
-    app.include_router(portfolio_router, prefix="/api")
-    app.include_router(trades_router, prefix="/api")
-    app.include_router(market_router, prefix="/api")
-    app.include_router(scan_router, prefix="/api")
+    # 认证路由（公开，不加鉴权）
+    app.include_router(auth_router, prefix="/api")
+
+    # 业务路由（全部要求 JWT 鉴权）
+    protected = [Depends(verify_token)]
+    app.include_router(portfolio_router, prefix="/api", dependencies=protected)
+    app.include_router(trades_router, prefix="/api", dependencies=protected)
+    app.include_router(market_router, prefix="/api", dependencies=protected)
+    app.include_router(scan_router, prefix="/api", dependencies=protected)
 
     return app
 

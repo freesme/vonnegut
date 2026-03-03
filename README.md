@@ -127,6 +127,14 @@ python scan.py --notify
 
 ## Docker 部署
 
+
+# 启动 PostgreSQL + 应用（首次会自动建表）
+docker compose up -d --build
+# 验证表已创建
+docker compose exec postgres psql -U hotstock -d hotstock_cache -c "\dt"
+# 查看应用日志
+docker compose logs -f trader
+
 ### 1. 准备环境变量
 
 ```bash
@@ -163,7 +171,6 @@ docker compose down
 
 说明：
 
-- `./data_store` 挂载到容器 `/app/data_store`，用于持仓与缓存持久化。
 - `./logs` 挂载到容器 `/app/logs`，用于查看策略日志。
 - **API 端口**：默认映射 `8000:8000`（可在 `.env` 中设置 `API_PORT` 修改），启动后可通过 `http://localhost:8000/docs` 访问接口文档。
 - 手动运行一次扫描可用：`docker compose run --rm trader python scan.py --notify`。
