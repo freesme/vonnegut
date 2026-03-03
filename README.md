@@ -19,11 +19,15 @@ A 股短线涨停板策略，从聚宽平台迁移至本地独立运行。自动
 ## 项目结构
 
 ```
-jukuantrader/
-├── main.py                 # 入口：启动调度器 + Tick 监控（长期驻留）
+SolutionDemo/
+├── main.py                 # 入口：启动调度器 + Tick 监控 + API 服务（长期驻留）
 ├── scan.py                 # 盘中选股 CLI（随时手动调用）
 ├── config.py               # 全局配置（自动加载 .env）
 ├── scheduler.py            # APScheduler 定时任务调度
+├── api/                    # FastAPI 接口层
+│   ├── app.py              # FastAPI 应用工厂
+│   ├── schemas.py          # Pydantic 请求/响应模型
+│   └── routers/            # 持仓、交易、选股、市场等路由
 ├── strategy/
 │   ├── core.py             # GlobalState + Context + 工具函数
 │   ├── stock_select.py     # 5 类模式选股
@@ -76,23 +80,50 @@ TUSHARE_TOKEN=你的token
 
 # 通知方式：console / serverchan / dingtalk
 NOTIFY_BACKEND=console
+
+# API 服务（可选，默认 8000）
+# API_HOST=0.0.0.0
+# API_PORT=8000
 ```
 
-### 3. 运行
+### 3. 启动与运行
 
-**常驻模式** — 自动调度，交易日全天运行：
+**主程序（常驻模式）** — 同时启动策略调度、Tick 监控与 API 服务：
 
 ```bash
 python main.py
 ```
 
-**手动选股** — 随时执行一次选股扫描：
+启动成功后终端会输出：
+
+- 数据目录、日志目录、通知方式
+- 初始资金、当前总资产、持仓数
+- 调度器任务数量
+- **API 服务地址**：`http://0.0.0.0:8000/docs`（Swagger 文档）
+
+按 `Ctrl+C` 可正常退出（会关闭调度器、Tick 监控与 API）。
+
+**仅手动选股** — 不启动常驻服务，只执行一次选股扫描：
 
 ```bash
 python scan.py
 python scan.py --min-score 16
 python scan.py --notify
 ```
+
+### 4. API 服务
+
+运行 `python main.py` 后，内置 FastAPI 服务默认监听 **8000** 端口，可通过 HTTP 查询与操作数据：
+
+| 能力 | 说明 |
+|------|------|
+| 交互文档 | 浏览器打开 [http://localhost:8000/docs](http://localhost:8000/docs) 查看并调试所有接口 |
+| 持仓 | `GET /api/portfolio` 账户总览，`GET /api/portfolio/positions` 持仓明细，`POST /api/portfolio/buy`、`POST /api/portfolio/sell` 模拟买卖 |
+| 交易 | `GET /api/trades/signals` 今日信号，`GET /api/trades/history` 历史交易记录 |
+| 选股 | `POST /api/scan` 触发一次选股扫描 |
+| 市场 | `GET /api/market/stats` 市场趋势，`GET /api/market/strategy` 策略优先级，`GET /api/market/scheduler` 调度器状态 |
+
+修改端口或绑定地址可在 `.env` 中设置 `API_HOST`、`API_PORT`，或在 `config.py` 中查看默认值。
 
 ## Docker 部署
 
@@ -134,6 +165,7 @@ docker compose down
 
 - `./data_store` 挂载到容器 `/app/data_store`，用于持仓与缓存持久化。
 - `./logs` 挂载到容器 `/app/logs`，用于查看策略日志。
+- **API 端口**：默认映射 `8000:8000`（可在 `.env` 中设置 `API_PORT` 修改），启动后可通过 `http://localhost:8000/docs` 访问接口文档。
 - 手动运行一次扫描可用：`docker compose run --rm trader python scan.py --notify`。
 
 ## 使用方式
@@ -243,7 +275,9 @@ for code, pos in pt.positions.items():
 | `POSITION_LIMIT` | 5 | 最大持仓数 |
 | `MIN_SCORE` | 14 | 评分最低阈值 |
 | `MAX_SINGLE_POSITION` | 0.30 | 单票仓位上限 |
-| `INITIAL_CASH` | 100,000 | 初始虚拟资金 |
+| `INITIAL_CASH` | 10,000 | 初始虚拟资金 |
+| `API_HOST` | 0.0.0.0 | API 监听地址（环境变量 `API_HOST`） |
+| `API_PORT` | 8000 | API 端口（环境变量 `API_PORT`） |
 | `TICK_POLL_INTERVAL` | 3 | tick 轮询间隔（秒） |
 | `TICK_RAPID_DROP_PCT` | 0.03 | 急跌止损阈值 |
 

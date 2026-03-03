@@ -20,4 +20,7 @@ RUN useradd -m appuser \
     && chown -R appuser:appuser /app
 USER appuser
 
+# 策略调度 + Tick 监控 + FastAPI（默认 8000）
+EXPOSE 8000
+
 CMD ["python", "main.py"]

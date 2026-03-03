@@ -8,6 +8,8 @@ services:
     container_name: jukuantrader
     env_file:
       - .env
+    ports:
+      - "${API_PORT:-8000}:${API_PORT:-8000}"
     volumes:
       - ./data_store:/app/data_store
       - ./logs:/app/logs
