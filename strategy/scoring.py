@@ -11,7 +11,7 @@ import traceback
 import numpy as np
 import pandas as pd
 
-from strategy.core import Context, state
+from strategy.core import Context, state, get_buy_reason
 from utils.logger import log
 
 
@@ -363,4 +363,59 @@ def filter_stocks_by_score(
     elapsed = time.time() - t0
     log.info(f"评分完成: {len(stocks)} → {len(passed)} 只通过 "
              f"(阈值={min_score}, 耗时 {elapsed:.1f}s)")
+
+    all_scored = [s for s in stocks[:max_stocks] if s in state.score_cache]
+    _log_all_scores(all_scored, ctx, min_score)
+
     return passed
+
+
+def _log_all_scores(stocks: list[str], ctx: Context, min_score: int) -> None:
+    """
+    在日志中以表格形式输出全部候选股的评分结果。
+    展示列与 scan._print_results 中的最终选股结果保持一致。
+    """
+    if not stocks:
+        return
+    dp = ctx.dp
+    if dp is None:
+        return
+
+    details = []
+    for stock in stocks:
+        cached = state.score_cache.get(stock, {})
+        info = dp.get_security_info(stock)
+        pattern = get_buy_reason(stock) or "-"
+        details.append({
+            "stock": stock,
+            "name": info.display_name,
+            "pattern": pattern,
+            "total_score": cached.get("total_score", 0),
+            "f1_limit_up": cached.get("factor1_limit_up", 0),
+            "f2_technical": cached.get("factor2_technical", 0),
+            "f3_volume_ma": cached.get("factor3_volume_ma", 0),
+            "f4_mainline": cached.get("factor4_mainline", 0),
+            "f5_sentiment": cached.get("factor5_sentiment", 0),
+            "f6_main_force": cached.get("factor6_main_force", 0),
+        })
+
+    details.sort(key=lambda d: d["total_score"], reverse=True)
+
+    log.info("=" * 75)
+    log.info("  全部候选股评分结果")
+    log.info("=" * 75)
+    log.info(
+        f"  {'序号':>2}  {'代码':<12} {'名称':<8} {'模式':<8} "
+        f"{'总分':>4} {'涨停':>3} {'技术':>3} {'量MA':>3} {'主线':>3} {'情绪':>3} {'资金':>3}"
+    )
+    log.info("-" * 75)
+    for i, d in enumerate(details, 1):
+        log.info(
+            f"  {i:>2}.  {d['stock']:<12} {d['name']:<8} {d['pattern']:<8} "
+            f"{d['total_score']:>4.0f} "
+            f"{d['f1_limit_up']:>3.0f} {d['f2_technical']:>3.0f} "
+            f"{d['f3_volume_ma']:>3.0f} {d['f4_mainline']:>3.0f} "
+            f"{d['f5_sentiment']:>3.0f} {d['f6_main_force']:>3.0f}"
+        )
+    log.info("=" * 75)
+    log.info(f"  共 {len(details)} 只  |  最低评分阈值: {min_score}  |  最大持仓: {state.position_limit}")
